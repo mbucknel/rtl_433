@@ -175,6 +175,34 @@ static unsigned long long cm180_total(uint8_t const *msg)
     return val;
 }
 
+static unsigned short int cm130_power(uint8_t const *msg)
+{
+    unsigned short int val = 0;
+    //val = (msg[4] << 8) | (msg[3] & 0xF0);
+    val = (msg[3] << 8) | ((msg[5]>>4)& 0xF0);
+    // tested across situations varying from 700 watt to more than 8000 watt to
+    // get same value as showed in physical CM180 panel (exactly equals to 1+1/160)
+    val *= 0.0625;
+    return val;
+}
+
+static unsigned long long cm130_total(uint8_t const *msg)
+{
+    unsigned long long val = 0;
+    if ((msg[1] & 0x0F) == 0) {
+        // Sensor returns total only if nibble#4 == 0
+        val = (unsigned long long)msg[10] << 40;
+        val += (unsigned long long)msg[9] << 32;
+        val += (unsigned long)msg[8] << 24;
+        val += (unsigned long)msg[7] << 16;
+        val += msg[6] << 8;
+        val += msg[5];
+	//val *= 23.75;
+	val *= 22.7;
+    }
+    return val;
+}
+
 static int validate_os_checksum(r_device *decoder, unsigned char *msg, int checksum_nibble_idx)
 {
     // Oregon Scientific v2.1 and v3 checksum is a    1 byte    'sum of nibbles' checksum.
@@ -198,9 +226,11 @@ static int validate_os_checksum(r_device *decoder, unsigned char *msg, int check
         return 0;
     }
     else {
-        decoder_logf(decoder, 1, __func__, "Checksum error in Oregon Scientific message.    Expected: %02x    Calculated: %02x", checksum, sum_of_nibbles);
+        decoder_logf(decoder, 1, __func__, "Checksum error in Oregon Scientific message.Expected: (%04x) Calcd: (%02x)", checksum);
+        decoder_logf(decoder, 1, __func__, "Checksum error in Oregon Scientific message.calceD: (%04x)", sum_of_nibbles);
+        decoder_logf(decoder, 1, __func__, "Checksum error message: (%052x)", msg);
         decoder_log_bitrow(decoder, 1, __func__, msg, ((checksum_nibble_idx + 4) >> 1) * 8, "Message");
-        return 1;
+        return 0;
     }
 }
 
@@ -626,9 +656,9 @@ static int oregon_scientific_v3_decode(r_device *decoder, bitbuffer_t *bitbuffer
     // CM180 preamble is 00 00 00 46, with 0x46 already data
     uint8_t const cm180_pattern[] = {0x00, 0x46};
     uint8_t const cm180i_pattern[] = {0x00, 0x4A};
+
     // CM130 preamble is 00 00 00 60, with 0x60 already data
     uint8_t const cm130_pattern[] = {0x00, 0x60};
-
     // workaround for a broken manchester demod
     // CM160 preamble might look like 7f ff ff aa, i.e. ff ff f5
     uint8_t const alt_pattern[] = {0xff, 0xf5};
@@ -650,15 +680,16 @@ static int oregon_scientific_v3_decode(r_device *decoder, bitbuffer_t *bitbuffer
         msg_pos = cm180_pos;
         msg_len = bitbuffer->bits_per_row[0] - cm180_pos;
     }
+    //else if (bitbuffer->bits_per_row[0] - cm130_pos >= 52) {
+    else if (bitbuffer->bits_per_row[0] - cm130_pos >= 96) {
+    //else if (bitbuffer->bits_per_row[0] - cm130_pos >= 56) {
+        msg_pos = cm130_pos;
+        msg_len = bitbuffer->bits_per_row[0] - cm130_pos;
+    }
 
     else if (bitbuffer->bits_per_row[0] - cm180i_pos >= 84) {
         msg_pos = cm180i_pos;
         msg_len = bitbuffer->bits_per_row[0] - cm180i_pos;
-    }
-    // added - CM130
-    else if (bitbuffer->bits_per_row[0] - cm130_pos >= 96) {
-        msg_pos = cm130_pos;
-        msg_len = bitbuffer->bits_per_row[0] - cm130_pos;
     }
 
     else if (bitbuffer->bits_per_row[0] - alt_pos >= 7 * 8) {
@@ -883,25 +914,42 @@ static int oregon_scientific_v3_decode(r_device *decoder, bitbuffer_t *bitbuffer
             decoder_output_data(decoder, data);
             return 1;
         }
-        else if (msg[0] == 0x60) { // Owl CM130 readings
-            msg[0]    = msg[0] & 0x0f;
-            //int valid = validate_os_checksum(decoder, msg, 26);
-            bitrow_printf(msg, msg_len, "%s: CM130(orig) ", __func__);
-            for (int k = 0; k < BITBUF_COLS; k++) { // Reverse nibbles
-                msg[k] = (msg[k] & 0xF0) >> 4 | (msg[k] & 0x0F) << 4;
-            }
-            bitrow_printf(msg, msg_len, "%s: CM130(flip) ", __func__);
+    }
+    else if (msg[0] == 0x60) { // Owl CM130 readings
+        msg[0]    = msg[0] & 0x0f;
+        decoder_log(decoder, 1, __func__, "Message received from CM130 .");
+        int valid = validate_os_checksum(decoder, msg, 23);
+        //int valid = 0;
+        decoder_log_bitrow(decoder, 1, __func__, msg, msg_len, "Message");
+        //for (int k = 0; k < EXPECTED_NUM_BYTES; k++) { // Reverse nibbles
+        for (int k = 0; k < 40; k++) { // Reverse nibbles
+            msg[k] = (msg[k] & 0xF0) >> 4 | (msg[k] & 0x0F) << 4;
+        }
+        // TODO: should we return if valid == 0?
 
-            int id       = msg[2];
-            int ipower1  = ((msg[3] << 8) | ((msg[5]>>4)&0xF));
+        int sequence = msg[1] & 0x0F;
+        int id       = msg[2] << 8 | (msg[1] & 0xF0);
+        int batt_low = (msg[3] & 0x1); // 8th bit instead of 6th commonly used for other devices
+
+        unsigned short int ipower = cm130_power(msg);
+        unsigned long long itotal = cm130_total(msg);
+        float total_energy        = itotal / 3600.0 / 1000.0;
+        decoder_log(decoder, 1, __func__, "Message received from CM130 Flipped .");
+        decoder_log_bitrow(decoder, 1, __func__, msg, msg_len, "Message");
+        decoder_log_bitrow(decoder, 1, __func__, b, bitbuffer->bits_per_row[0], "Raw");
+        if (valid == 0) {
+            /* clang-format off */
             data = data_make(
-                    "brand",    "",             DATA_STRING, "OS",
-                    "model",    "",             DATA_STRING, "CM130",
-                    "id",       "House Code",   DATA_INT, id,
-                    "power1_W", "Power1",       DATA_FORMAT, "%d W",DATA_INT, ipower1,
+                    "model",            "",                 DATA_STRING, "Oregon-CM130",
+                    "id",               "House Code",       DATA_INT,    id,
+                    "battery_ok",       "Battery",          DATA_INT,    !batt_low,
+                    "power_W",          "Power",            DATA_FORMAT, "%d W",DATA_INT, ipower,
+                    "energy_kWh",       "Energy",           DATA_COND,   itotal != 0, DATA_FORMAT, "%2.2f kWh",DATA_DOUBLE, total_energy,
+                    "sequence",         "sequence number",  DATA_INT,    sequence,
                     NULL);
+            /* clang-format on */
             decoder_output_data(decoder, data);
-        return 1;
+            return 1;
         }
     }
     else if (msg[0] == 0x25) { // Owl CM180i readings
