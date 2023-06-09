@@ -198,7 +198,7 @@ static unsigned long long cm130_total(uint8_t const *msg)
         val += msg[6] << 8;
         val += msg[5];
 	//val *= 23.75;
-	val *= 22.7;
+	val *= 16.1;
     }
     return val;
 }
@@ -944,7 +944,7 @@ static int oregon_scientific_v3_decode(r_device *decoder, bitbuffer_t *bitbuffer
                     "id",               "House Code",       DATA_INT,    id,
                     "battery_ok",       "Battery",          DATA_INT,    !batt_low,
                     "power_W",          "Power",            DATA_FORMAT, "%d W",DATA_INT, ipower,
-                    "energy_kWh",       "Energy",           DATA_COND,   itotal != 0, DATA_FORMAT, "%2.2f kWh",DATA_DOUBLE, total_energy,
+                    "energy_kWh",       "Energy",           DATA_COND,   itotal != 0, DATA_FORMAT, "%10.4f kWh",DATA_DOUBLE, total_energy,
                     "sequence",         "sequence number",  DATA_INT,    sequence,
                     NULL);
             /* clang-format on */
