@@ -198,12 +198,7 @@ static unsigned long long cm130_total(uint8_t const *msg)
         val += msg[6] << 8;
         val += msg[5];
 	//val *= 23.75;
-<<<<<<< HEAD
 	val *= 16.1;
-=======
-	//val *= 22.7;
-	//val *= 19.75;
->>>>>>> @{u}
     }
     return val;
 }
